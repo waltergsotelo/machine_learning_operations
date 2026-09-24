@@ -54,16 +54,31 @@ La red replica la arquitectura final del TP: tres capas ocultas de 32 neuronas, 
 
 ## API de predicción
 
-La API resuelve el alias `production` al iniciar. Consulta `GET /model-info` para obtener el orden de las columnas y envía un vector numérico con ese mismo orden a `POST /predict`:
+La API resuelve el alias `production` al iniciar. Envía las features por nombre a `POST /predict`; la API las ordena internamente según el esquema del modelo:
 
 ```bash
 curl http://localhost:8000/model-info
 curl -X POST http://localhost:8000/predict \
   -H 'Content-Type: application/json' \
-  -d '{"features": [0.0, 1.0]}'
+  -d '{
+    "features": {
+      "Gender": 1, "Marital_Status": 0,
+      "prop_cat_1": 0.4, "prop_cat_2": 0, "prop_cat_3": 0, "prop_cat_4": 0,
+      "prop_cat_5": 0.6, "prop_cat_6": 0, "prop_cat_7": 0, "prop_cat_8": 0,
+      "prop_cat_9": 0, "prop_cat_10": 0, "prop_cat_11": 0, "prop_cat_12": 0,
+      "prop_cat_13": 0, "prop_cat_14": 0, "prop_cat_15": 0, "prop_cat_16": 0,
+      "prop_cat_17": 0, "prop_cat_18": 0, "prop_cat_19": 0, "prop_cat_20": 0,
+      "n_transacciones": 10, "n_categorias_distintas": 2,
+      "n_productos_distintos": 8, "concentracion_hhi": 0.52,
+      "tasa_recompra": 0.2, "categorias_por_compra": 0.2, "City_nivel": 2,
+      "edad_18-25": 0, "edad_26-35": 1, "edad_36-45": 0, "edad_46-50": 0,
+      "edad_51-55": 0, "edad_55+": 0,
+      "antig_2": 0, "antig_3": 1, "antig_4": 0, "antig_5+": 0
+    }
+  }'
 ```
 
-El ejemplo de `POST /predict` requiere reemplazar el vector por todos los valores informados en `feature_columns`; la API responde `422` si la cantidad no coincide. `GET /health` indica la versión de modelo cargada.
+`GET /model-info` expone las columnas requeridas. La API responde `422` si faltan features o se envían nombres desconocidos. `GET /health` indica la versión de modelo cargada.
 
 ## Dependencias aisladas
 

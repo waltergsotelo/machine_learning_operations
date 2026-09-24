@@ -19,8 +19,8 @@ MODEL_URI = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
 
 
 class PredictionRequest(BaseModel):
-    features: list[float] = Field(
-        description="Vector numérico ordenado según los nombres devueltos por /model-info."
+    features: dict[str, float] = Field(
+        description="Features numéricas con los nombres expuestos por /model-info."
     )
 
 
@@ -45,14 +45,24 @@ class ModelService:
             self.model.eval()
             self.model_version = model_version.version
 
-    def predict(self, features: list[float]) -> float:
+    def predict(self, features: dict[str, float]) -> float:
         if self.model is None:
             raise RuntimeError("El modelo aún no fue cargado.")
-        if len(features) != len(self.feature_columns):
+        expected_columns = set(self.feature_columns)
+        provided_columns = set(features)
+        missing_columns = sorted(expected_columns - provided_columns)
+        unexpected_columns = sorted(provided_columns - expected_columns)
+        if missing_columns or unexpected_columns:
+            details = []
+            if missing_columns:
+                details.append(f"Faltan features: {', '.join(missing_columns)}.")
+            if unexpected_columns:
+                details.append(f"Features desconocidas: {', '.join(unexpected_columns)}.")
             raise ValueError(
-                f"Se esperaban {len(self.feature_columns)} features y se recibieron {len(features)}."
+                " ".join(details)
             )
-        input_tensor = torch.tensor(np.asarray([features], dtype=np.float32))
+        ordered_features = [features[column] for column in self.feature_columns]
+        input_tensor = torch.tensor(np.asarray([ordered_features], dtype=np.float32))
         with torch.no_grad():
             prediction = self.model(input_tensor)
         return float(prediction.squeeze().item())
