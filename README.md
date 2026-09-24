@@ -2,6 +2,12 @@
 
 Esta primera etapa entrena de forma reproducible la red de deep learning del trabajo de compras. El objetivo es predecir el gasto promedio por cliente.
 
+## Integrantes
+
+- **Alumno 1:** Juan Pablo Castelino
+- **Alumno 2:** Walter Gabriel Sotelo
+- **Alumno 3:** Esteban Leonardo Torres Martín
+
 - **Airflow** orquesta una ejecucion manual del pipeline.
 - **MinIO** almacena los datasets y los artefactos físicos del modelo mediante S3.
 - **MLflow** registra parametros, métricas y versiones, y actúa como acceso al modelo.
