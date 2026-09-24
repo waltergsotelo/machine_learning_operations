@@ -1,0 +1,130 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build:
+      context: ./mlflow
+      network: host
+    command: >-
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/db/mlflow.db
+      --serve-artifacts
+      --artifacts-destination s3://mlflow-artifacts
+      --host 0.0.0.0
+      --port 5000
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-db:/mlflow/db
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: quay.io/minio/mc:latest
+    entrypoint: /bin/sh
+    command: >-
+      -c 'until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
+      mc mb --ignore-existing local/mlflow-artifacts'
+    depends_on:
+      minio:
+        condition: service_started
+
+  api:
+    build:
+      context: ./api
+      network: host
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      MODEL_NAME: purchase-spend-regressor
+      MODEL_ALIAS: production
+    ports:
+      - "8000:8000"
+    depends_on:
+      mlflow:
+        condition: service_started
+
+  airflow-init:
+    &airflow-common
+    build:
+      context: ./airflow
+      network: host
+    environment: &airflow-environment
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: E6uCq8-QhHuqap0i51ns7fxgm89o3x1mYD9veKoyywM=
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: mlops-data
+      DATASET_SOURCE_PATH: /opt/airflow/source-data/dataset_compras.csv
+    user: "50000:0"
+    volumes: &airflow-volumes
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ../../aprendizaje profundo:/opt/airflow/source-data:ro
+    depends_on: &airflow-depends-on
+      postgres:
+        condition: service_healthy
+    command: >-
+      bash -c "airflow db migrate &&
+      airflow users create --username airflow --password airflow
+      --firstname Demo --lastname Admin --role Admin --email airflow@example.com || true"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8081:8080"
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  mlflow-db:
+  minio-data:
