@@ -13,31 +13,32 @@ ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
     schedule_interval="*/30 * * * *",
     start_date=pendulum.datetime(2025, 1, 1, tz=ARGENTINA_TIMEZONE),
     catchup=False,
+    max_active_runs=1,
     tags=["demo", "mlops", "minio", "mlflow", "pytorch"],
 )
 def train_purchase_regressor():
     @task.virtualenv(
-        requirements=["boto3==1.35.71"],
+        requirements=["boto3==1.35.71", "gdown==5.2.0"],
         system_site_packages=False,
     )
-    def upload_raw_dataset() -> str:
+    def download_raw_dataset() -> dict[str, object]:
+        import hashlib
+        import json
         import os
         from pathlib import Path
+        from tempfile import TemporaryDirectory
 
         import boto3
+        import gdown
         from botocore.exceptions import ClientError
 
-        dataset_source_path = Path(
-            os.getenv(
-                "DATASET_SOURCE_PATH",
-                "/opt/airflow/source-data/dataset_compras.csv",
-            )
+        dataset_source_url = os.getenv(
+            "DATASET_SOURCE_URL",
+            "https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view",
         )
-        if not dataset_source_path.is_file():
-            raise FileNotFoundError(f"No se encontro el dataset: {dataset_source_path}")
-
         bucket = os.getenv("S3_BUCKET", "mlops-data")
         dataset_key = "raw/dataset_compras.csv"
+        state_key = "state/dataset_compras.json"
         client = boto3.client(
             "s3",
             endpoint_url=os.getenv("S3_ENDPOINT_URL", "http://minio:9000"),
@@ -50,8 +51,57 @@ def train_purchase_regressor():
         except ClientError:
             client.create_bucket(Bucket=bucket)
 
-        client.upload_file(str(dataset_source_path), bucket, dataset_key)
-        return dataset_key
+        with TemporaryDirectory() as temporary_directory:
+            dataset_path = Path(temporary_directory) / "dataset_compras.csv"
+            downloaded_path = gdown.download(
+                url=dataset_source_url,
+                output=str(dataset_path),
+                quiet=False,
+                fuzzy=True,
+            )
+            if downloaded_path is None or not dataset_path.is_file():
+                raise RuntimeError(f"No se pudo descargar el dataset desde {dataset_source_url}")
+            if dataset_path.stat().st_size == 0:
+                raise ValueError("El dataset descargado esta vacio")
+
+            digest = hashlib.sha256()
+            with dataset_path.open("rb") as dataset_file:
+                for chunk in iter(lambda: dataset_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            dataset_sha256 = digest.hexdigest()
+
+            previous_sha256 = None
+            try:
+                previous_state = json.loads(
+                    client.get_object(Bucket=bucket, Key=state_key)["Body"].read()
+                )
+                previous_sha256 = previous_state.get("sha256")
+            except ClientError as error:
+                if error.response["Error"]["Code"] not in {"NoSuchKey", "404"}:
+                    raise
+
+            changed = dataset_sha256 != previous_sha256
+            if changed:
+                client.upload_file(str(dataset_path), bucket, dataset_key)
+
+            return {
+                "changed": changed,
+                "dataset_key": dataset_key,
+                "sha256": dataset_sha256,
+                "size_bytes": dataset_path.stat().st_size,
+                "source_url": dataset_source_url,
+                "state_key": state_key,
+            }
+
+    @task
+    def continue_if_dataset_changed(dataset_info: dict[str, object]) -> str:
+        from airflow.exceptions import AirflowSkipException
+
+        if not dataset_info["changed"]:
+            raise AirflowSkipException(
+                f"Dataset sin cambios: SHA-256 {dataset_info['sha256']}"
+            )
+        return str(dataset_info["dataset_key"])
 
     @task.virtualenv(
         requirements=["boto3==1.35.71", "pandas==2.2.3"],
@@ -475,10 +525,52 @@ def train_purchase_regressor():
                 "model_version": model_version,
             }
 
-    raw_dataset = upload_raw_dataset()
+    @task.virtualenv(
+        requirements=["boto3==1.35.71"],
+        system_site_packages=False,
+    )
+    def mark_dataset_processed(
+        dataset_info: dict[str, object], training_result: dict[str, object]
+    ) -> str:
+        import json
+        import os
+        from datetime import datetime, timezone
+
+        import boto3
+
+        bucket = os.getenv("S3_BUCKET", "mlops-data")
+        state_key = str(dataset_info["state_key"])
+        client = boto3.client(
+            "s3",
+            endpoint_url=os.getenv("S3_ENDPOINT_URL", "http://minio:9000"),
+            aws_access_key_id=os.getenv("S3_ACCESS_KEY", "minioadmin"),
+            aws_secret_access_key=os.getenv("S3_SECRET_KEY", "minioadmin"),
+            region_name="us-east-1",
+        )
+        state = {
+            "sha256": dataset_info["sha256"],
+            "size_bytes": dataset_info["size_bytes"],
+            "source_url": dataset_info["source_url"],
+            "dataset_key": dataset_info["dataset_key"],
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "mlflow_run_id": training_result["run_id"],
+            "model_version": training_result["model_version"],
+            "is_promoted": training_result["is_promoted"],
+        }
+        client.put_object(
+            Bucket=bucket,
+            Key=state_key,
+            Body=json.dumps(state, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        return state_key
+
+    downloaded_dataset = download_raw_dataset()
+    raw_dataset = continue_if_dataset_changed(downloaded_dataset)
     validated_dataset = eda_validate(raw_dataset)
     curated_dataset = prepare_curated_dataset(validated_dataset)
-    train_evaluate_and_register(curated_dataset)
+    training_result = train_evaluate_and_register(curated_dataset)
+    mark_dataset_processed(downloaded_dataset, training_result)
 
 
 train_purchase_regressor()

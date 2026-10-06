@@ -1,66 +1,122 @@
-# Demo local de MLOps
+# Pipeline local de MLOps para prediccion de gasto
 
-Esta primera etapa entrena de forma reproducible la red de deep learning del trabajo de compras. El objetivo es predecir el gasto promedio por cliente.
+Este proyecto implementa un pipeline de MLOps de punta a punta para estimar el gasto promedio de un cliente a partir de su historial de compras. El objetivo no es solamente entrenar una red neuronal, sino automatizar la ingesta, validacion, preparacion de datos, reentrenamiento, registro, promocion y servicio del modelo.
 
-## Integrantes
+## Problema y dataset
 
-- **Alumno 1:** Juan Pablo Castelino
-- **Alumno 2:** Walter Gabriel Sotelo
-- **Alumno 3:** Esteban Leonardo Torres Martín
+El problema es una regresion supervisada. A partir de transacciones identificadas por usuario y producto, el pipeline construye una tabla agregada por cliente y predice `Gasto_Promedio`.
 
-- **Airflow** orquesta una ejecucion manual del pipeline.
-- **MinIO** almacena los datasets y los artefactos físicos del modelo mediante S3.
-- **MLflow** registra parametros, métricas y versiones, y actúa como acceso al modelo.
-- **FastAPI** consulta el modelo promovido y expone la predicción por HTTP.
-- **Docker Compose** ejecuta el entorno local completo.
+El dataset crudo contiene, entre otras, las columnas `User_ID`, `Product_ID`, `Age`, `Gender`, `Marital_Status`, `City_Category`, `Stay_In_Current_City_Years`, `Product_Category` y `Purchase`. El CSV no se versiona dentro del repositorio.
 
-FastAPI carga `purchase-spend-regressor@production` desde MLflow; MLflow recupera su artefacto desde MinIO. De este modo, la API siempre usa la versión promovida por el pipeline.
+- **Nombre esperado:** `dataset_compras.csv`.
+- **Origen de esta demo:** [archivo publico en Google Drive](https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view).
+- **Configuracion:** variable `DATASET_SOURCE_URL` en `docker-compose.yml`.
+- **Ubicacion de trabajo:** `s3://mlops-data/raw/dataset_compras.csv` en MinIO.
+
+No es necesario descargar el CSV manualmente: la primera tarea del DAG usa `gdown`, obtiene el archivo desde Google Drive y lo deja en MinIO. El enlace debe continuar compartido para cualquier persona que tenga acceso a la URL. Para inspeccionarlo fuera del pipeline, se puede descargar con:
+
+```bash
+python -m pip install gdown
+gdown --fuzzy "https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view" \
+  -O dataset_compras.csv
+```
 
 ## Arquitectura
 
-`Airflow → MLflow Registry → MinIO (artefactos del modelo) → FastAPI`
+Flujo autocontenido de la demo:
 
-Airflow ejecuta el ETL cada 30 minutos, entrena y registra cada run en MLflow. MLflow conserva la metadata del experimento y publica los artefactos del modelo en el bucket `mlflow-artifacts` de MinIO. FastAPI se conectará únicamente a MLflow mediante el alias estable `production`.
+```text
+Google Drive
+    -> adaptador de ingesta en Airflow
+    -> MinIO: raw/dataset_compras.csv
+    -> EDA y dataset curado
+    -> entrenamiento PyTorch
+    -> MLflow Registry
+    -> FastAPI
+```
+
+El contrato de entrada del pipeline de modelado es el objeto `s3://mlops-data/raw/dataset_compras.csv`. MinIO simula el servicio S3 que se utilizaria en un entorno real.
+
+En un escenario productivo, otro proceso ETL, independiente de este DAG, seria responsable de actualizar ese objeto con informacion nueva. El DAG de entrenamiento solo consultaria MinIO, detectaria si el contenido cambio y decidiria si corresponde reentrenar. Para que la demo pueda ejecutarse sin ese sistema externo, la tarea `download_raw_dataset` representa temporalmente esa ingesta previa descargando el archivo desde Google Drive.
+
+Airflow agenda el DAG cada 30 minutos para emular un cron productivo y permitir demostrar varias corridas en poco tiempo. Esa frecuencia es ilustrativa: segun la disponibilidad de datos y el costo de entrenamiento, en produccion podria ejecutarse una vez por dia o con otra periodicidad.
+
+## Componentes
+
+- **Airflow:** agenda y orquesta la ingesta, validacion, preparacion y entrenamiento.
+- **MinIO:** simula S3 y almacena datasets, estado de procesamiento y artefactos.
+- **MLflow:** registra parametros, metricas, artefactos y versiones del modelo.
+- **PyTorch:** entrena la red neuronal de regresion.
+- **FastAPI:** sirve la version promovida mediante una API REST.
+- **Docker Compose:** levanta el entorno local completo.
+
+FastAPI carga `purchase-spend-regressor@production` desde MLflow. MLflow recupera el artefacto fisico desde el bucket `mlflow-artifacts` de MinIO, por lo que la API siempre resuelve la version promovida por el pipeline.
 
 ## Estructura
 
 ```text
-demo-mlops/
-├── airflow/       # Imagen propia, DAGs y dependencias del orquestador
-├── api/           # API REST de inferencia con FastAPI
-├── mlflow/        # Imagen del servidor de tracking
-└── docker-compose.yml
+machine_learning_operations/
+├── airflow/              # Imagen, DAG y dependencias de Airflow
+├── api/                  # API REST de inferencia
+├── mlflow/               # Imagen del servidor de tracking
+├── docker-compose.yml    # Servicios e infraestructura local
+├── CHANGELOG.md          # Cambios por entrega
+└── README.md
 ```
 
-## Ejecutar
+## Requisitos
 
-Requisito: Docker Desktop con al menos 4 GB de memoria asignada.
+- Docker Desktop, Docker Engine con Compose o Colima.
+- Al menos 4 GB de memoria disponibles para Docker.
+- Conexion a Internet durante la construccion y la descarga del dataset.
+- Puertos locales `5000`, `8000`, `8081`, `9100` y `9101` disponibles.
+
+## Ejecucion local
+
+Desde una terminal:
 
 ```bash
-cd "Operaciones de machine learning/demo-mlops"
-docker-compose up airflow-init
-docker-compose up --build -d
+git clone https://github.com/waltergsotelo/machine_learning_operations.git
+cd machine_learning_operations
+docker compose up --build airflow-init
+docker compose up --build -d \
+  postgres minio minio-init mlflow airflow-webserver airflow-scheduler
 ```
 
-Usa `docker compose` en lugar de `docker-compose` si tu instalacion ofrece el subcomando moderno.
+Si la instalacion utiliza el binario clasico, reemplazar `docker compose` por `docker-compose`. Si el repositorio ya esta clonado, ejecutar los comandos desde su raiz, donde se encuentra `docker-compose.yml`.
 
-- Airflow: http://localhost:8081 (`airflow` / `airflow`)
-- MLflow: http://localhost:5000
-- MinIO Console: http://localhost:9101 (`minioadmin` / `minioadmin`)
-- API REST: http://localhost:8000/docs
+Servicios disponibles:
 
-En Airflow, busca `train_purchase_regressor`, habilitalo si fuera necesario y ejecutalo con **Trigger DAG**. Luego se ejecuta cada 30 minutos, hora de Argentina. El DAG crea el bucket `mlops-data` y ejecuta estas etapas:
+- Airflow: http://localhost:8081 (`airflow` / `airflow`).
+- MLflow: http://localhost:5000.
+- MinIO Console: http://localhost:9101 (`minioadmin` / `minioadmin`).
 
-1. `upload_raw_dataset`: carga `dataset_compras.csv` en `raw/dataset_compras.csv`.
-2. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
-3. `prepare_curated_dataset`: limpia transacciones, agrega por cliente y genera features sin leakage; guarda `curated/tabla_clientes_modelado.csv`.
-4. `train_evaluate_and_register`: descarga exclusivamente la tabla curada desde MinIO, entrena la MLP y registra la ejecución en MLflow. Si `r2_test` es mayor o igual que el de `production`, promueve la versión con los alias `candidate` y `production`; de lo contrario, conserva la versión en producción.
+En Airflow, buscar `train_purchase_regressor`, habilitarlo y ejecutarlo con **Trigger DAG**. La primera corrida descarga y procesa el dataset. Las siguientes comparan su contenido antes de ejecutar las etapas costosas.
 
-La red replica la arquitectura final del TP: tres capas ocultas de 32 neuronas, activación ELU, dropout de 0.2, Adam, weight decay y early stopping. Al finalizar, MLflow muestra el experimento `purchase-spend-regression`, las métricas `r2_test`, `rmse_test`, `previous_production_r2_test` e `is_promoted`. El archivo físico del modelo queda en `s3://mlflow-artifacts`.
+Cuando la primera corrida termine correctamente y MLflow ya tenga el alias `production`, iniciar la API:
 
-## API de predicción
+```bash
+docker compose up --build -d api
+```
 
-La API resuelve el alias `production` al iniciar. Envía las features por nombre a `POST /predict`; la API las ordena internamente según el esquema del modelo:
+FastAPI quedara disponible en http://localhost:8000/docs. Este orden es necesario porque la API carga el modelo promovido durante su inicio.
+
+## Etapas del DAG
+
+1. `download_raw_dataset`: descarga el origen configurado, calcula su SHA-256 y lo compara con el ultimo dataset procesado. Si cambio, lo publica en `raw/dataset_compras.csv`.
+2. `continue_if_dataset_changed`: deja las tareas restantes en estado `skipped` cuando el hash no cambio.
+3. `eda_validate`: valida columnas, filas, nulos, compras invalidas y consistencia demografica; guarda `reports/eda_dataset_compras.json`.
+4. `prepare_curated_dataset`: limpia y agrega las transacciones por cliente; guarda `curated/tabla_clientes_modelado.csv`.
+5. `train_evaluate_and_register`: entrena la MLP y registra la corrida en MLflow. Promueve la version cuando su `r2_test` es mayor o igual al modelo `production` vigente.
+6. `mark_dataset_processed`: despues de un entrenamiento exitoso, guarda el hash y los datos de la corrida en `state/dataset_compras.json`.
+
+El estado no se actualiza si falla la validacion, la preparacion o el entrenamiento. En ese caso, la siguiente corrida vuelve a intentar el mismo dataset. El DAG permite una sola corrida activa para evitar entrenamientos simultaneos sobre el mismo cambio.
+
+La red utiliza tres capas ocultas de 32 neuronas, activacion ELU, dropout de `0.2`, Adam, weight decay y early stopping. MLflow registra `r2_test`, `rmse_test`, `previous_production_r2_test` e `is_promoted`.
+
+## API de prediccion
+
+La API resuelve el alias `production` al iniciar. `GET /model-info` informa las columnas requeridas, `GET /health` muestra la version cargada y `POST /predict` recibe las features por nombre.
 
 ```bash
 curl http://localhost:8000/model-info
@@ -84,16 +140,43 @@ curl -X POST http://localhost:8000/predict \
   }'
 ```
 
-`GET /model-info` expone las columnas requeridas. La API responde `422` si faltan features o se envían nombres desconocidos. `GET /health` indica la versión de modelo cargada.
+La API responde `422` si faltan features o se envian nombres desconocidos. Hasta que exista una primera version promovida en MLflow, la API no podra cargar el alias `production`.
 
-## Dependencias aisladas
+## Estado del proyecto
 
-Airflow solo instala `virtualenv`. Cada tarea crea un entorno virtual temporal: la carga usa `boto3`, EDA y preparación usan `boto3` y `pandas`, y el entrenamiento instala PyTorch, MLflow y scikit-learn. Esto evita mezclar las librerías de ML con las de Airflow. La primera ejecución demora más porque descarga esas dependencias.
+### Implementado
 
-## Detener
+- Entorno reproducible con Docker Compose.
+- Descarga automatica del dataset de referencia y almacenamiento en MinIO.
+- Validacion, limpieza y construccion de features por cliente.
+- Deteccion de cambios por SHA-256 para evitar reentrenamientos identicos.
+- Entrenamiento aislado de la MLP, evaluacion y registro en MLflow.
+- Promocion automatica basada en `r2_test` y servicio mediante FastAPI.
+
+### Pendiente para un entorno productivo
+
+- Separar la ingesta en un ETL externo que escriba directamente en S3 o MinIO.
+- Adaptar el DAG de entrenamiento para consumir exclusivamente el objeto dejado por ese ETL.
+- Reemplazar credenciales locales por secretos administrados.
+- Incorporar pruebas automatizadas, CI/CD, monitoreo, alertas y deteccion de drift.
+- Definir politicas productivas de retencion, rollback y aprobacion del modelo.
+
+El detalle de cambios por entrega se mantiene en [CHANGELOG.md](./CHANGELOG.md).
+
+## Integrantes
+
+- **Alumno 1:** Juan Pablo Castelino.
+- **Alumno 2:** Walter Gabriel Sotelo.
+- **Alumno 3:** Esteban Leonardo Torres Martin.
+
+## Detener el entorno
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
-Los datos persisten en volumenes Docker. Para eliminarlos intencionalmente: `docker-compose down --volumes`.
+Los datos persisten en volumenes Docker. Para eliminarlos intencionalmente:
+
+```bash
+docker compose down --volumes
+```
