@@ -1,9 +1,11 @@
 import json
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Any
 
+import boto3
 import mlflow
 import mlflow.artifacts
 import mlflow.pytorch
@@ -16,6 +18,20 @@ from pydantic import BaseModel, Field
 MODEL_NAME = os.getenv("MODEL_NAME", "purchase-spend-regressor")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "production")
 MODEL_URI = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+
+
+def verify_dataset_available() -> None:
+    bucket = os.getenv("S3_BUCKET", "mlops-data")
+    dataset_key = "raw/dataset_compras.csv"
+    client = boto3.client(
+        "s3",
+        endpoint_url=os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000"),
+    )
+    with TemporaryDirectory() as temporary_directory:
+        dataset_path = Path(temporary_directory) / "dataset_compras.csv"
+        client.download_file(bucket, dataset_key, str(dataset_path))
+        if dataset_path.stat().st_size == 0:
+            raise ValueError(f"El dataset s3://{bucket}/{dataset_key} esta vacio.")
 
 
 class PredictionRequest(BaseModel):
@@ -74,6 +90,7 @@ app = FastAPI(title="Purchase Spend Predictor", version="0.1.0")
 
 @app.on_event("startup")
 def load_production_model() -> None:
+    verify_dataset_available()
     model_service.load()
 
 

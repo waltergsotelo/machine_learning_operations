@@ -116,13 +116,15 @@ Servicios disponibles:
 
 En Airflow, buscar `train_purchase_regressor`, habilitarlo y ejecutarlo con **Trigger DAG**. La primera corrida descarga y procesa el dataset. Las siguientes comparan su contenido antes de ejecutar las etapas costosas.
 
-Cuando la primera corrida termine correctamente y MLflow ya tenga el alias `production`, iniciar la API:
+En la primera instalacion, iniciar la API despues de disponer del dataset en MinIO y del modelo con alias `production` en MLflow:
 
 ```bash
 docker compose up --build -d api
 ```
 
-FastAPI quedara disponible en http://localhost:8000/docs. Este orden es necesario porque la API carga el modelo promovido durante su inicio.
+FastAPI quedara disponible en http://localhost:8000/docs. Durante el inicio, descarga temporalmente `raw/dataset_compras.csv` del bucket configurado en `S3_BUCKET` (por defecto `mlops-data`), comprueba que no este vacio y elimina la copia temporal. Luego descarga el esquema y carga el modelo promovido desde MLflow. Si falta alguno de estos recursos o no se puede descargar o cargar, el inicio falla y el error queda en los logs (`docker compose logs api`).
+
+La API sigue incluida en el inicio general de Compose y no consulta el resultado del ultimo entrenamiento. Si hay un dataset descargable y un modelo de produccion utilizable, puede iniciar aunque una corrida posterior haya fallado. Un fallo de entrenamiento no detiene la API que ya esta ejecutandose. Se mantienen `/health`, `/model-info` y `/predict`; `/health` informa el modelo cargado, no el estado de las corridas de Airflow. La comprobacion del dataset se realiza al arrancar, no en cada peticion.
 
 ### Verificacion manual del pipeline
 

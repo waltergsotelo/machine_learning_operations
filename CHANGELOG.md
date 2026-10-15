@@ -6,14 +6,22 @@ Este archivo registra los cambios relevantes del proyecto por entrega.
 
 ### Pendiente
 
-- Separar la ingesta del dataset en un proceso ETL externo al DAG de entrenamiento.
-- Consumir el dataset crudo exclusivamente desde S3 o MinIO.
-- Agregar pruebas automatizadas, CI/CD y observabilidad del pipeline.
-- Externalizar credenciales y configuraciones sensibles.
+- Revisar posibles incongruencias en nombres de archivos que deja MLFlow una vez corrido el experimento
+- Verificar que el modelo llegue a la API a través de Airflow
+- Arreglar el bug de creacoón de nuevo environment
+- Si se crea un nuevo modelo en MLFlow, reiniciar la aplicación desde Airflow
 
 ## Cambios sin publicar - 2026-10-15
 
-Cambios locales respecto del ultimo commit `9169335` (`fix: address first deployment feedback`).
+### Modificado
+
+- Agregada la descarga temporal y comprobacion de un dataset no vacio en MinIO antes de cargar el modelo al iniciar la API. Un dataset ausente o inaccesible impide el arranque, al igual que un modelo que no se puede cargar.
+- Mantenida la API en el inicio general de Compose y conservados sus endpoints. El arranque depende de la disponibilidad del dataset y del modelo de produccion, no del resultado del ultimo entrenamiento.
+- Documentados los requisitos de arranque y el alcance de `/health`, que informa el modelo cargado y no el estado de Airflow.
+
+## Compatibilidad del despliegue local - 2026-10-15
+
+Cambios incorporados en el commit `d892b86` respecto de `9169335` (`fix: address first deployment feedback`).
 
 ### Modificado
 

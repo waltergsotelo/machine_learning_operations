@@ -75,6 +75,7 @@ services:
       AWS_DEFAULT_REGION: us-east-1
       MODEL_NAME: purchase-spend-regressor
       MODEL_ALIAS: production
+      S3_BUCKET: mlops-data
     ports:
       - "8000:8000"
     depends_on:
