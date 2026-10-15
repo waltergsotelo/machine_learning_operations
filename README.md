@@ -8,7 +8,7 @@ Esta primera etapa entrena de forma reproducible la red de deep learning del tra
 - **Alumno 2:** Walter Gabriel Sotelo
 - **Alumno 3:** Esteban Leonardo Torres Martín
 
-- **Airflow** orquesta la ingesta semanal del dataset y el reentrenamiento que esta dispara.
+- **Airflow** orquesta la ingesta diaria del dataset y el reentrenamiento que esta dispara.
 - **MinIO** almacena los datasets y los artefactos físicos del modelo mediante S3.
 - **MLflow** registra parametros, métricas y versiones, y actúa como acceso al modelo.
 - **FastAPI** consulta el modelo promovido y expone la predicción por HTTP.
@@ -23,11 +23,11 @@ El dataset `dataset_compras.csv` (una fila por compra: `User_ID`, `Product_ID`, 
 El flujo se divide en dos DAGs conectados por un [Dataset de Airflow](https://airflow.apache.org/docs/apache-airflow/2.10.5/authoring-and-scheduling/datasets.html) (`s3://mlops-data/raw/dataset_compras.csv`):
 
 ```text
-ingest_purchase_dataset (semanal)                      train_purchase_regressor
+ingest_purchase_dataset (diaria)                       train_purchase_regressor
 download_and_publish → continue_if_changed → announce_new_dataset ──▶ eda_validate → prepare_curated_dataset → train_evaluate_and_register
 ```
 
-1. `ingest_purchase_dataset` corre una vez por semana. `download_and_publish` descarga el archivo, calcula su SHA-256 y lo compara con el hash guardado como metadata del objeto ya publicado en MinIO. Solo si cambió (o si todavía no hay nada publicado) lo sube a `raw/dataset_compras.csv`.
+1. `ingest_purchase_dataset` corre una vez por día. `download_and_publish` descarga el archivo, calcula su SHA-256 y lo compara con el hash guardado como metadata del objeto ya publicado en MinIO. Solo si cambió (o si todavía no hay nada publicado) lo sube a `raw/dataset_compras.csv`.
 2. Si no hubo cambios, `continue_if_changed` deja `announce_new_dataset` en `skipped` y no se avisa nada.
 3. Si hubo cambios, `announce_new_dataset` emite el evento del Dataset y Airflow dispara `train_purchase_regressor`.
 
@@ -66,7 +66,7 @@ Usa `docker compose` en lugar de `docker-compose` si tu instalacion ofrece el su
 - MinIO Console: http://localhost:9101 (`minioadmin` / `minioadmin`)
 - API REST: http://localhost:8000/docs
 
-En Airflow, habilita los dos DAGs, `ingest_purchase_dataset` y `train_purchase_regressor`. Al habilitar la ingesta, Airflow ejecuta su corrida más reciente: en la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. Después se ejecuta una vez por semana, hora de Argentina. `train_purchase_regressor` ejecuta estas etapas:
+En Airflow, habilita los dos DAGs, `ingest_purchase_dataset` y `train_purchase_regressor`. Al habilitar la ingesta, Airflow ejecuta su corrida más reciente: en la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. Después se ejecuta todos los días a medianoche, hora de Argentina. `train_purchase_regressor` ejecuta estas etapas:
 
 1. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
 2. `prepare_curated_dataset`: limpia transacciones, agrega por cliente y genera features sin leakage; guarda `curated/tabla_clientes_modelado.csv`.

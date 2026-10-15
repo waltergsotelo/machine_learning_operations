@@ -1,4 +1,4 @@
-"""Simula la publicación semanal del dataset de compras por el equipo de BI.
+"""Simula la publicación diaria del dataset de compras por el equipo de BI.
 
 Descarga el CSV desde la ruta remota, lo publica en MinIO solo si su SHA-256
 cambió y, en ese caso, emite el Dataset que dispara el reentrenamiento.
@@ -16,7 +16,7 @@ ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
 @dag(
     dag_id="ingest_purchase_dataset",
     description="Publica el dataset de compras en MinIO cuando cambia su contenido.",
-    schedule="@weekly",
+    schedule="@daily",
     start_date=pendulum.datetime(2025, 1, 1, tz=ARGENTINA_TIMEZONE),
     catchup=False,
     max_active_runs=1,
