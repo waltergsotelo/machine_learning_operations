@@ -8,7 +8,7 @@ Esta primera etapa entrena de forma reproducible la red de deep learning del tra
 - **Alumno 2:** Walter Gabriel Sotelo
 - **Alumno 3:** Esteban Leonardo Torres Martín
 
-- **Airflow** orquesta una ejecucion manual del pipeline.
+- **Airflow** orquesta la ingesta semanal del dataset y el reentrenamiento que esta dispara.
 - **MinIO** almacena los datasets y los artefactos físicos del modelo mediante S3.
 - **MLflow** registra parametros, métricas y versiones, y actúa como acceso al modelo.
 - **FastAPI** consulta el modelo promovido y expone la predicción por HTTP.
@@ -16,11 +16,28 @@ Esta primera etapa entrena de forma reproducible la red de deep learning del tra
 
 FastAPI carga `purchase-spend-regressor@production` desde MLflow; MLflow recupera su artefacto desde MinIO. De este modo, la API siempre usa la versión promovida por el pipeline.
 
+## Origen del dataset y disparo del reentrenamiento
+
+El dataset `dataset_compras.csv` (una fila por compra: `User_ID`, `Product_ID`, `Age`, `Gender`, `Marital_Status`, `City_Category`, `Stay_In_Current_City_Years`, `Product_Category`, `Purchase`, entre otras) lo publica el equipo de Data Mining/BI en una ruta remota. En esta demo esa ruta se simula con un [archivo público en Google Drive](https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view), configurado en la variable `DATASET_SOURCE_URL` de `docker-compose.yml`. No hace falta descargarlo a mano: el pipeline lo obtiene solo.
+
+El flujo se divide en dos DAGs conectados por un [Dataset de Airflow](https://airflow.apache.org/docs/apache-airflow/2.10.5/authoring-and-scheduling/datasets.html) (`s3://mlops-data/raw/dataset_compras.csv`):
+
+```text
+ingest_purchase_dataset (semanal)                      train_purchase_regressor
+download_and_publish → continue_if_changed → announce_new_dataset ──▶ eda_validate → prepare_curated_dataset → train_evaluate_and_register
+```
+
+1. `ingest_purchase_dataset` corre una vez por semana. `download_and_publish` descarga el archivo, calcula su SHA-256 y lo compara con el hash guardado como metadata del objeto ya publicado en MinIO. Solo si cambió (o si todavía no hay nada publicado) lo sube a `raw/dataset_compras.csv`.
+2. Si no hubo cambios, `continue_if_changed` deja `announce_new_dataset` en `skipped` y no se avisa nada.
+3. Si hubo cambios, `announce_new_dataset` emite el evento del Dataset y Airflow dispara `train_purchase_regressor`.
+
+Es decir: **el reentrenamiento se dispara cuando llega una versión nueva del dataset**, no por calendario. También puede ejecutarse a mano con **Trigger DAG**. Como el evento se consume al disparar el entrenamiento, si este falla tras su reintento automático hay que relanzarlo a mano: la ingesta no vuelve a avisar hasta que el archivo cambie.
+
 ## Arquitectura
 
 `Airflow → MLflow Registry → MinIO (artefactos del modelo) → FastAPI`
 
-Airflow ejecuta el ETL cada 30 minutos, entrena y registra cada run en MLflow. MLflow conserva la metadata del experimento y publica los artefactos del modelo en el bucket `mlflow-artifacts` de MinIO. FastAPI se conectará únicamente a MLflow mediante el alias estable `production`.
+Airflow publica el dataset en MinIO, entrena y registra cada run en MLflow. MLflow conserva la metadata del experimento y publica los artefactos del modelo en el bucket `mlflow-artifacts` de MinIO. FastAPI se conectará únicamente a MLflow mediante el alias estable `production`.
 
 ## Estructura
 
@@ -49,12 +66,11 @@ Usa `docker compose` en lugar de `docker-compose` si tu instalacion ofrece el su
 - MinIO Console: http://localhost:9101 (`minioadmin` / `minioadmin`)
 - API REST: http://localhost:8000/docs
 
-En Airflow, busca `train_purchase_regressor`, habilitalo si fuera necesario y ejecutalo con **Trigger DAG**. Luego se ejecuta cada 30 minutos, hora de Argentina. El DAG crea el bucket `mlops-data` y ejecuta estas etapas:
+En Airflow, habilita los dos DAGs, `ingest_purchase_dataset` y `train_purchase_regressor`. Al habilitar la ingesta, Airflow ejecuta su corrida más reciente: en la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. Después se ejecuta una vez por semana, hora de Argentina. `train_purchase_regressor` ejecuta estas etapas:
 
-1. `upload_raw_dataset`: carga `dataset_compras.csv` en `raw/dataset_compras.csv`.
-2. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
-3. `prepare_curated_dataset`: limpia transacciones, agrega por cliente y genera features sin leakage; guarda `curated/tabla_clientes_modelado.csv`.
-4. `train_evaluate_and_register`: descarga exclusivamente la tabla curada desde MinIO, entrena la MLP y registra la ejecución en MLflow. Si `r2_test` es mayor o igual que el de `production`, promueve la versión con los alias `candidate` y `production`; de lo contrario, conserva la versión en producción.
+1. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
+2. `prepare_curated_dataset`: limpia transacciones, agrega por cliente y genera features sin leakage; guarda `curated/tabla_clientes_modelado.csv`.
+3. `train_evaluate_and_register`: descarga exclusivamente la tabla curada desde MinIO, entrena la MLP y registra la ejecución en MLflow. Si `r2_test` es mayor o igual que el de `production`, promueve la versión con los alias `candidate` y `production`; de lo contrario, conserva la versión en producción.
 
 La red replica la arquitectura final del TP: tres capas ocultas de 32 neuronas, activación ELU, dropout de 0.2, Adam, weight decay y early stopping. Al finalizar, MLflow muestra el experimento `purchase-spend-regression`, las métricas `r2_test`, `rmse_test`, `previous_production_r2_test` e `is_promoted`. El archivo físico del modelo queda en `s3://mlflow-artifacts`.
 
@@ -88,7 +104,7 @@ curl -X POST http://localhost:8000/predict \
 
 ## Dependencias aisladas
 
-Airflow solo instala `virtualenv`. Cada tarea crea un entorno virtual temporal: la carga usa `boto3`, EDA y preparación usan `boto3` y `pandas`, y el entrenamiento instala PyTorch, MLflow y scikit-learn. Esto evita mezclar las librerías de ML con las de Airflow. La primera ejecución demora más porque descarga esas dependencias.
+Airflow solo instala `virtualenv`. Cada tarea crea un entorno virtual temporal: la ingesta usa `boto3` y `gdown`, EDA y preparación usan `boto3` y `pandas`, y el entrenamiento instala PyTorch, MLflow y scikit-learn. Esto evita mezclar las librerías de ML con las de Airflow. La primera ejecución demora más porque descarga esas dependencias.
 
 ## Detener
 

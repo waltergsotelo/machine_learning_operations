@@ -16,7 +16,6 @@ services:
   mlflow:
     build:
       context: ./mlflow
-      network: host
     command: >-
       mlflow server
       --backend-store-uri sqlite:////mlflow/db/mlflow.db
@@ -38,7 +37,7 @@ services:
         condition: service_completed_successfully
 
   minio:
-    image: quay.io/minio/minio:latest
+    image: coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -50,7 +49,7 @@ services:
       - minio-data:/data
 
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
     entrypoint: /bin/sh
     command: >-
       -c 'until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
@@ -62,7 +61,6 @@ services:
   api:
     build:
       context: ./api
-      network: host
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -81,7 +79,6 @@ services:
     &airflow-common
     build:
       context: ./airflow
-      network: host
     environment: &airflow-environment
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -92,12 +89,12 @@ services:
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: mlops-data
-      DATASET_SOURCE_PATH: /opt/airflow/source-data/dataset_compras.csv
+      # Ruta remota donde el equipo de BI publica el dataset (simulada con Google Drive).
+      DATASET_SOURCE_URL: https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view
     user: "50000:0"
     volumes: &airflow-volumes
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
-      - ../../aprendizaje profundo:/opt/airflow/source-data:ro
     depends_on: &airflow-depends-on
       postgres:
         condition: service_healthy

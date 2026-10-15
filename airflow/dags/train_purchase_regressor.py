@@ -1,7 +1,13 @@
-"""Orquesta carga, EDA, preparación y entrenamiento aislado de una MLP."""
+"""Orquesta EDA, preparación y entrenamiento aislado de una MLP.
+
+Se dispara cuando ingest_purchase_dataset publica una versión nueva del
+dataset crudo, o manualmente desde Airflow.
+"""
 
 import pendulum
 from airflow.decorators import dag, task
+
+from purchase_datasets import RAW_DATASET, RAW_DATASET_KEY
 
 
 ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
@@ -9,50 +15,17 @@ ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
 
 @dag(
     dag_id="train_purchase_regressor",
-    description="ETL recurrente, entrenamiento aislado y promocion de la MLP en MLflow.",
-    schedule_interval="*/30 * * * *",
+    description="Reentrena y promueve la MLP en MLflow cuando se publica un dataset nuevo.",
+    schedule=[RAW_DATASET],
     start_date=pendulum.datetime(2025, 1, 1, tz=ARGENTINA_TIMEZONE),
     catchup=False,
+    max_active_runs=1,
+    # El evento del dataset se consume al disparar el DAG: si una tarea falla,
+    # la ingesta no vuelve a avisar hasta que cambie el archivo.
+    default_args={"retries": 1},
     tags=["demo", "mlops", "minio", "mlflow", "pytorch"],
 )
 def train_purchase_regressor():
-    @task.virtualenv(
-        requirements=["boto3==1.35.71"],
-        system_site_packages=False,
-    )
-    def upload_raw_dataset() -> str:
-        import os
-        from pathlib import Path
-
-        import boto3
-        from botocore.exceptions import ClientError
-
-        dataset_source_path = Path(
-            os.getenv(
-                "DATASET_SOURCE_PATH",
-                "/opt/airflow/source-data/dataset_compras.csv",
-            )
-        )
-        if not dataset_source_path.is_file():
-            raise FileNotFoundError(f"No se encontro el dataset: {dataset_source_path}")
-
-        bucket = os.getenv("S3_BUCKET", "mlops-data")
-        dataset_key = "raw/dataset_compras.csv"
-        client = boto3.client(
-            "s3",
-            endpoint_url=os.getenv("S3_ENDPOINT_URL", "http://minio:9000"),
-            aws_access_key_id=os.getenv("S3_ACCESS_KEY", "minioadmin"),
-            aws_secret_access_key=os.getenv("S3_SECRET_KEY", "minioadmin"),
-            region_name="us-east-1",
-        )
-        try:
-            client.head_bucket(Bucket=bucket)
-        except ClientError:
-            client.create_bucket(Bucket=bucket)
-
-        client.upload_file(str(dataset_source_path), bucket, dataset_key)
-        return dataset_key
-
     @task.virtualenv(
         requirements=["boto3==1.35.71", "pandas==2.2.3"],
         system_site_packages=False,
@@ -234,8 +207,10 @@ def train_purchase_regressor():
             "numpy==1.26.4",
             "pandas==2.2.3",
             "scikit-learn==1.5.2",
-            "torch==2.5.1",
+            "sqlalchemy==2.0.36",
+            "torch==2.5.1+cpu",
         ],
+        index_urls=["https://pypi.org/simple", "https://download.pytorch.org/whl/cpu"],
         system_site_packages=False,
     )
     def train_evaluate_and_register(dataset_key: str) -> dict[str, object]:
@@ -475,8 +450,7 @@ def train_purchase_regressor():
                 "model_version": model_version,
             }
 
-    raw_dataset = upload_raw_dataset()
-    validated_dataset = eda_validate(raw_dataset)
+    validated_dataset = eda_validate(RAW_DATASET_KEY)
     curated_dataset = prepare_curated_dataset(validated_dataset)
     train_evaluate_and_register(curated_dataset)
 
