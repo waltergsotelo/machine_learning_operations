@@ -85,6 +85,29 @@ docker compose up --build -d \
 
 Si la instalacion utiliza el binario clasico, reemplazar `docker compose` por `docker-compose`. Si el repositorio ya esta clonado, ejecutar los comandos desde su raiz, donde se encuentra `docker-compose.yml`.
 
+En PowerShell, ejecutar el comando de inicio en una sola linea, sin el caracter de continuacion `\` de Bash:
+
+```powershell
+docker compose up --build -d postgres minio minio-init mlflow airflow-webserver airflow-scheduler
+```
+
+### Compatibilidad del entorno local
+
+- Los servicios `minio` y `minio-init` usan `coollabsio/minio:RELEASE.2025-04-22T22-12-26Z` en reemplazo de las imagenes de Quay que devolvieron errores de acceso. Es una imagen de terceros, no oficial de MinIO; incluye el servidor y el cliente `mc` utilizado para crear el bucket de artefactos. La version fijada permite repetir la configuracion de esta demo, pero no implica mantenimiento ni actualizaciones de seguridad para produccion.
+- La opcion de build `network: host` esta comentada en MLflow, API y Airflow. Se usa la red predeterminada del builder para instalar dependencias, sin solicitar el permiso adicional `network.host`.
+- MLflow 2.17.2 requiere en este entorno `sqlalchemy>=2.0,<2.1`. La restriccion esta declarada tanto en `mlflow/Dockerfile` como en el entorno virtual de la tarea de entrenamiento para evitar el error de importacion de `FallbackAsyncAdaptedQueuePool`.
+
+Si se modifica `mlflow/Dockerfile`, reconstruir y recrear el servicio sin detener el resto del entorno:
+
+```powershell
+docker compose up --build -d mlflow
+docker compose logs --tail 30 mlflow
+```
+
+Los cambios en los requisitos del DAG se aplican en un nuevo intento de la tarea, no en uno que ya esta ejecutandose. La primera ejecucion puede tardar varios minutos instalando las dependencias de PyTorch antes de comenzar el entrenamiento.
+
+### Acceso a los servicios
+
 Servicios disponibles:
 
 - Airflow: http://localhost:8081 (`airflow` / `airflow`).
@@ -100,6 +123,15 @@ docker compose up --build -d api
 ```
 
 FastAPI quedara disponible en http://localhost:8000/docs. Este orden es necesario porque la API carga el modelo promovido durante su inicio.
+
+### Verificacion manual del pipeline
+
+1. Comprobar que MLflow abre en http://localhost:5000 antes de iniciar el entrenamiento. `airflow-init` y `minio-init` son servicios de inicializacion: deben terminar con codigo `0`, mientras los demas servicios permanecen activos. Usar `docker compose ps -a` para revisar sus estados.
+2. En un entorno sin dataset procesado, disparar el DAG desde Airflow y esperar que las seis tareas terminen en `success`. Verificar el modelo registrado en MLflow y los objetos `raw/dataset_compras.csv` y `state/dataset_compras.json` en el bucket `mlops-data` de MinIO.
+3. Disparar otra corrida sin modificar el archivo de origen. `download_raw_dataset` debe terminar en `success`; `continue_if_dataset_changed` y las tareas posteriores deben quedar en `skipped`. La corrida completa debe terminar en `success`, sin crear otro entrenamiento en MLflow ni actualizar el estado de procesamiento.
+4. Si una tarea falla, revisar sus logs en Airflow. Despues de corregir la causa, usar **Clear** sobre la tarea fallida e incluir **Downstream** para reintentar las tareas dependientes.
+
+En la verificacion local del 2026-10-15 se completo el entrenamiento, se registro y promovio la version 1 del modelo, y una segunda corrida omitio el entrenamiento al detectar el mismo dataset. Esta comprobacion cubre el entrenamiento y la deteccion de datos sin cambios; no reemplaza las pruebas automatizadas pendientes ni valida el servicio de inferencia.
 
 ## Etapas del DAG
 

@@ -281,6 +281,7 @@ def train_purchase_regressor():
         requirements=[
             "boto3==1.35.71",
             "mlflow==2.17.2",
+            "sqlalchemy>=2.0,<2.1",
             "numpy==1.26.4",
             "pandas==2.2.3",
             "scikit-learn==1.5.2",
