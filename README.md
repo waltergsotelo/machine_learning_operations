@@ -104,7 +104,9 @@ curl -X POST http://localhost:8000/predict \
 
 ## Dependencias aisladas
 
-Airflow solo instala `virtualenv`. Cada tarea crea un entorno virtual temporal: la ingesta usa `boto3` y `gdown`, EDA y preparación usan `boto3` y `pandas`, y el entrenamiento instala PyTorch, MLflow y scikit-learn. Esto evita mezclar las librerías de ML con las de Airflow. La primera ejecución demora más porque descarga esas dependencias.
+Airflow solo instala `virtualenv`. Cada tarea corre en su propio entorno virtual: la ingesta usa `boto3` y `gdown`, EDA y preparación usan `boto3` y `pandas`, y el entrenamiento instala PyTorch, MLflow y scikit-learn. Esto evita mezclar las librerías de ML con las de Airflow.
+
+Los entornos se guardan en el volumen `airflow-venv-cache` (`venv_cache_path` en los DAGs). Airflow crea cada uno la primera vez que lo necesita, identificado por un hash de sus requisitos, y lo reutiliza en las corridas siguientes, incluso si se recrean los contenedores. Por eso solo la primera ejecución demora más. Si cambian los requisitos de una tarea, Airflow crea un entorno nuevo automáticamente. Para forzar una reinstalación completa, con el stack detenido: `docker volume rm <proyecto>_airflow-venv-cache` (el prefijo es el nombre de la carpeta del repo, por defecto `machine_learning_operations`).
 
 ## Detener
 

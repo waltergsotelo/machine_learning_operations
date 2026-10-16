@@ -11,6 +11,9 @@ from purchase_datasets import RAW_DATASET, RAW_DATASET_KEY
 
 
 ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
+# Cada venv se crea una sola vez por combinacion de requisitos y se reutiliza
+# entre corridas. El directorio es un volumen de Docker (ver docker-compose.yml).
+VENV_CACHE_PATH = "/opt/airflow/venv-cache"
 
 
 @dag(
@@ -26,6 +29,7 @@ def ingest_purchase_dataset():
     @task.virtualenv(
         requirements=["boto3==1.35.71", "gdown==5.2.0"],
         system_site_packages=False,
+        venv_cache_path=VENV_CACHE_PATH,
     )
     def download_and_publish(dataset_key: str) -> bool:
         """Publica el CSV remoto si difiere del publicado; devuelve si hubo cambios.

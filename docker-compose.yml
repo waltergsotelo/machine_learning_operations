@@ -95,6 +95,7 @@ services:
     volumes: &airflow-volumes
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
+      - airflow-venv-cache:/opt/airflow/venv-cache
     depends_on: &airflow-depends-on
       postgres:
         condition: service_healthy
@@ -125,3 +126,4 @@ volumes:
   postgres-data:
   mlflow-db:
   minio-data:
+  airflow-venv-cache:

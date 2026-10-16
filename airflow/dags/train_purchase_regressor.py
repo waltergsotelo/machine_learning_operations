@@ -11,6 +11,9 @@ from purchase_datasets import RAW_DATASET, RAW_DATASET_KEY
 
 
 ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
+# Cada venv se crea una sola vez por combinacion de requisitos y se reutiliza
+# entre corridas. El directorio es un volumen de Docker (ver docker-compose.yml).
+VENV_CACHE_PATH = "/opt/airflow/venv-cache"
 
 
 @dag(
@@ -29,6 +32,7 @@ def train_purchase_regressor():
     @task.virtualenv(
         requirements=["boto3==1.35.71", "pandas==2.2.3"],
         system_site_packages=False,
+        venv_cache_path=VENV_CACHE_PATH,
     )
     def eda_validate(raw_dataset_key: str) -> str:
         import json
@@ -106,6 +110,7 @@ def train_purchase_regressor():
     @task.virtualenv(
         requirements=["boto3==1.35.71", "pandas==2.2.3"],
         system_site_packages=False,
+        venv_cache_path=VENV_CACHE_PATH,
     )
     def prepare_curated_dataset(raw_dataset_key: str) -> str:
         import os
@@ -212,6 +217,7 @@ def train_purchase_regressor():
         ],
         index_urls=["https://pypi.org/simple", "https://download.pytorch.org/whl/cpu"],
         system_site_packages=False,
+        venv_cache_path=VENV_CACHE_PATH,
     )
     def train_evaluate_and_register(dataset_key: str) -> dict[str, object]:
         import os
