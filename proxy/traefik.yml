@@ -1,0 +1,15 @@
+# Configuración estática del proxy del deploy Blue-Green.
+# Expone la API en :8000 y toma las rutas de active.yml, que el DAG
+# deploy_purchase_model reescribe para cambiar el tráfico; Traefik lo recarga
+# solo, sin reiniciarse ni cortar conexiones.
+entryPoints:
+  web:
+    address: ":8000"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic/active.yml
+    watch: true
+
+log:
+  level: INFO

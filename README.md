@@ -11,10 +11,11 @@ Esta primera etapa entrena de forma reproducible la red de deep learning del tra
 - **Airflow** orquesta la ingesta diaria del dataset y el reentrenamiento que esta dispara.
 - **MinIO** almacena los datasets y los artefactos físicos del modelo mediante S3.
 - **MLflow** registra parametros, métricas y versiones, y actúa como acceso al modelo.
-- **FastAPI** consulta el modelo promovido y expone la predicción por HTTP.
+- **FastAPI** expone la predicción por HTTP en dos instancias, `api-blue` y `api-green`.
+- **Traefik** es el proxy que envía el tráfico a una de las dos y permite desplegar modelos nuevos sin cortar el servicio.
 - **Docker Compose** ejecuta el entorno local completo.
 
-FastAPI carga `purchase-spend-regressor@production` desde MLflow; MLflow recupera su artefacto desde MinIO. De este modo, la API siempre usa la versión promovida por el pipeline.
+FastAPI carga `purchase-spend-regressor@production` desde MLflow; MLflow recupera su artefacto desde MinIO. Cada vez que el pipeline promueve una versión, el DAG `deploy_purchase_model` la despliega con Blue-Green (ver [Despliegue Blue-Green](#despliegue-blue-green)).
 
 ## Origen del dataset y disparo del reentrenamiento
 
@@ -35,9 +36,9 @@ Es decir: **el reentrenamiento se dispara cuando llega una versión nueva del da
 
 ## Arquitectura
 
-`Airflow → MLflow Registry → MinIO (artefactos del modelo) → FastAPI`
+`Airflow → MLflow Registry → MinIO (artefactos del modelo) → FastAPI (blue / green) ← Traefik :8000 ← clientes`
 
-Airflow publica el dataset en MinIO, entrena y registra cada run en MLflow. MLflow conserva la metadata del experimento y publica los artefactos del modelo en el bucket `mlflow-artifacts` de MinIO. FastAPI se conectará únicamente a MLflow mediante el alias estable `production`.
+Airflow publica el dataset en MinIO, entrena y registra cada run en MLflow. MLflow conserva la metadata del experimento y publica los artefactos del modelo en el bucket `mlflow-artifacts` de MinIO. Las instancias de FastAPI se conectan únicamente a MLflow, mediante el alias estable `production` o la versión que les indique el deploy. Los clientes solo ven el proxy.
 
 ## Estructura
 
@@ -46,6 +47,7 @@ demo-mlops/
 ├── airflow/       # Imagen propia, DAGs y dependencias del orquestador
 ├── api/           # API REST de inferencia con FastAPI
 ├── mlflow/        # Imagen del servidor de tracking
+├── proxy/         # Configuración de Traefik y plantilla del color activo
 └── docker-compose.yml
 ```
 
@@ -64,19 +66,28 @@ Usa `docker compose` en lugar de `docker-compose` si tu instalacion ofrece el su
 - Airflow: http://localhost:8081 (`airflow` / `airflow`)
 - MLflow: http://localhost:5000
 - MinIO Console: http://localhost:9101 (`minioadmin` / `minioadmin`)
-- API REST: http://localhost:8000/docs
+- API REST (a través del proxy): http://localhost:8000/docs
 
-En Airflow, habilita los dos DAGs, `ingest_purchase_dataset` y `train_purchase_regressor`. Al habilitar la ingesta, Airflow ejecuta su corrida más reciente: en la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. Después se ejecuta todos los días a medianoche, hora de Argentina. `train_purchase_regressor` ejecuta estas etapas:
+En Airflow, habilita los tres DAGs: `ingest_purchase_dataset`, `train_purchase_regressor` y `deploy_purchase_model`. Al habilitar la ingesta, Airflow ejecuta su corrida más reciente: en la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. Después se ejecuta todos los días a medianoche, hora de Argentina.
+
+En la primera instalación todavía no hay modelo, así que `api-blue` y `api-green` terminan con error al iniciar: no arrancan sin un modelo que servir. Cuando el primer entrenamiento registre la versión `production`, levántalas:
+
+```bash
+docker compose up -d api-blue api-green
+```
+
+`train_purchase_regressor` ejecuta estas etapas:
 
 1. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
 2. `prepare_curated_dataset`: limpia transacciones, agrega por cliente y genera features sin leakage; guarda `curated/tabla_clientes_modelado.csv`.
 3. `train_evaluate_and_register`: descarga exclusivamente la tabla curada desde MinIO, entrena la MLP y registra la ejecución en MLflow. Si `r2_test` es mayor o igual que el de `production`, promueve la versión con los alias `candidate` y `production`; de lo contrario, conserva la versión en producción.
+4. `continue_if_promoted` y `announce_new_model`: si la versión se promovió, emiten el Dataset `models:/purchase-spend-regressor@production`, que dispara `deploy_purchase_model`. Si no se promovió, quedan en `skipped`.
 
 La red replica la arquitectura final del TP: tres capas ocultas de 32 neuronas, activación ELU, dropout de 0.2, Adam, weight decay y early stopping. Al finalizar, MLflow muestra el experimento `purchase-spend-regression`, las métricas `r2_test`, `rmse_test`, `previous_production_r2_test` e `is_promoted`. El archivo físico del modelo queda en `s3://mlflow-artifacts`.
 
 ## API de predicción
 
-La API resuelve el alias `production` al iniciar. Envía las features por nombre a `POST /predict`; la API las ordena internamente según el esquema del modelo:
+Cada instancia carga al iniciar la versión a la que apunta el alias `production`; si el alias todavía no existe, no arranca. Después, las versiones nuevas le llegan mediante el deploy, sin reiniciarla. Envía las features por nombre a `POST /predict`; la API las ordena internamente según el esquema del modelo:
 
 ```bash
 curl http://localhost:8000/model-info
@@ -100,7 +111,34 @@ curl -X POST http://localhost:8000/predict \
   }'
 ```
 
-`GET /model-info` expone las columnas requeridas. La API responde `422` si faltan features o se envían nombres desconocidos. `GET /health` indica la versión de modelo cargada.
+`GET /model-info` expone las columnas requeridas. La API responde `422` si faltan features o se envían nombres desconocidos. `GET /health` indica qué instancia respondió (`color`) y la versión de modelo cargada.
+
+## Despliegue Blue-Green
+
+La API corre en dos instancias, `api-blue` y `api-green`, y el proxy (Traefik, puerto 8000) envía todo el tráfico a una sola. Cuando el entrenamiento promueve una versión, `deploy_purchase_model` la pone en servicio sin cortar las predicciones:
+
+```text
+resolve_target → load_on_idle → smoke_test_idle → switch_traffic → verify_public
+```
+
+1. `resolve_target`: lee en MLflow la versión con alias `production` y, en `proxy-dynamic/active.yml`, qué color recibe el tráfico.
+2. `load_on_idle`: carga esa versión en la instancia inactiva con `POST /admin/load`. La instancia valida el modelo antes de ponerlo en servicio; si falla, conserva el anterior.
+3. `smoke_test_idle`: verifica `/health`, `/model-info` y una predicción en la instancia inactiva, que todavía no recibe tráfico.
+4. `switch_traffic`: reescribe `active.yml` desde `proxy/active.yml.template`. Traefik lo recarga solo, sin reiniciarse ni cortar conexiones.
+5. `verify_public`: confirma a través del proxy que se sirve la versión nueva. Si no ocurre en 30 segundos, devuelve el tráfico al color anterior y marca el DAG como fallido.
+
+La instancia que deja de recibir tráfico conserva el modelo anterior. Casos que contempla:
+
+| Situación | Resultado |
+|---|---|
+| Ninguna instancia corriendo (primera instalación) | `skipped`: al levantarlas cargarán `production` |
+| Las dos corriendo | Despliegue Blue-Green |
+| Solo una corriendo | Falla: no se puede desplegar sin cortar el servicio; hay que levantar la otra |
+| La instancia activa ya sirve esa versión | `skipped`: no hay nada que desplegar |
+
+**El alias `production` manda:** el deploy siempre despliega la versión a la que apunta, que es también la que cargan las instancias al reiniciarse. Para volver atrás, reasigna `production` a la versión anterior en MLflow (pestaña *Models*) y dispara `deploy_purchase_model` con **Trigger DAG**. Como la instancia inactiva todavía tiene cargada esa versión, el cambio es inmediato.
+
+`POST /admin/load` exige el token `ADMIN_TOKEN` y el proxy no lo publica: solo Airflow lo alcanza por la red interna. En esta demo el token está en `docker-compose.yml`; en un entorno real iría en un gestor de secretos.
 
 ## Dependencias aisladas
 

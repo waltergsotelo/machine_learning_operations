@@ -1,0 +1,14 @@
+# Instancia de la API que recibe el tráfico ({color}). Plantilla compartida:
+# el proxy la usa al arrancar para crear la configuración inicial (blue) y el
+# DAG deploy_purchase_model para cambiar de color. /admin no se publica.
+http:
+  routers:
+    api:
+      entryPoints: [web]
+      rule: "PathPrefix(`/`) && !PathPrefix(`/admin`)"
+      service: api-{color}
+  services:
+    api-{color}:
+      loadBalancer:
+        servers:
+          - url: http://api-{color}:8000

@@ -1,13 +1,14 @@
 """Orquesta EDA, preparación y entrenamiento aislado de una MLP.
 
 Se dispara cuando ingest_purchase_dataset publica una versión nueva del
-dataset crudo, o manualmente desde Airflow.
+dataset crudo, o manualmente desde Airflow. Si promueve una versión, avisa
+mediante PRODUCTION_MODEL para que deploy_purchase_model la despliegue.
 """
 
 import pendulum
 from airflow.decorators import dag, task
 
-from purchase_datasets import RAW_DATASET, RAW_DATASET_KEY
+from purchase_datasets import PRODUCTION_MODEL, RAW_DATASET, RAW_DATASET_KEY
 
 
 ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
@@ -456,9 +457,19 @@ def train_purchase_regressor():
                 "model_version": model_version,
             }
 
+    @task.short_circuit
+    def continue_if_promoted(training_result: dict[str, object]) -> bool:
+        """Omite el aviso de modelo nuevo cuando la versión no se promovió."""
+        return bool(training_result["is_promoted"])
+
+    @task(outlets=[PRODUCTION_MODEL])
+    def announce_new_model() -> None:
+        """Al terminar con éxito, Airflow registra un evento que dispara el deploy."""
+
     validated_dataset = eda_validate(RAW_DATASET_KEY)
     curated_dataset = prepare_curated_dataset(validated_dataset)
-    train_evaluate_and_register(curated_dataset)
+    training_result = train_evaluate_and_register(curated_dataset)
+    continue_if_promoted(training_result) >> announce_new_model()
 
 
 train_purchase_regressor()
