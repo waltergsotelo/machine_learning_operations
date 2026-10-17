@@ -70,11 +70,7 @@ Usa `docker compose` en lugar de `docker-compose` si tu instalacion ofrece el su
 
 Al iniciar el stack con `docker-compose up --build -d`, el servicio `airflow-trigger-ingest` espera a que Airflow cargue los tres DAGs, los habilita y dispara `ingest_purchase_dataset`. En la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. En cada `docker-compose up` se vuelve a disparar la ingesta; el hash SHA-256 evita republicar el archivo o reentrenar si no cambió. Además, la ingesta conserva su schedule diario a medianoche, hora de Argentina.
 
-En la primera instalación todavía no hay modelo, así que `api-blue` y `api-green` terminan con error al iniciar: no arrancan sin un modelo que servir. Cuando el primer entrenamiento registre la versión `production`, levántalas:
-
-```bash
-docker compose up -d api-blue api-green
-```
+En la primera instalación, `api-blue` y `api-green` esperan a que MLflow publique el alias `production` antes de iniciar. Cuando el entrenamiento lo publica, ambas APIs cargan el modelo y el DAG de deploy espera a que estén saludables antes de continuar.
 
 `train_purchase_regressor` ejecuta estas etapas:
 

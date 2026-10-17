@@ -29,6 +29,8 @@ ARGENTINA_TIMEZONE = pendulum.timezone("America/Argentina/Buenos_Aires")
 MODEL_ALIAS = "production"
 COLORS = ("blue", "green")
 PROXY_URL = os.getenv("PROXY_URL", "http://proxy:8000")
+API_STARTUP_TIMEOUT_SECONDS = 600
+API_HEALTH_POLL_SECONDS = 5
 # Plantilla del repo (montada de solo lectura) y archivo que vigila Traefik.
 PROXY_TEMPLATE_PATH = Path("/opt/airflow/proxy/active.yml.template")
 PROXY_CONFIG_PATH = Path("/opt/airflow/proxy-dynamic/active.yml")
@@ -48,6 +50,25 @@ def _instance_health(color: str) -> dict | None:
     return response.json()
 
 
+def _wait_for_instances() -> dict[str, dict]:
+    """Espera a que Blue y Green carguen el alias production desde MLflow."""
+    deadline = time.monotonic() + API_STARTUP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        health = {color: _instance_health(color) for color in COLORS}
+        if all(health.values()):
+            return health
+        unavailable = [color for color in COLORS if health[color] is None]
+        unavailable_apis = ", ".join(f"api-{color}" for color in unavailable)
+        print(f"Esperando a que estén saludables: {unavailable_apis}.")
+        time.sleep(API_HEALTH_POLL_SECONDS)
+
+    raise AirflowFailException(
+        "api-blue y api-green no estuvieron saludables dentro de "
+        f"{API_STARTUP_TIMEOUT_SECONDS} segundos; el modelo production puede "
+        "no estar publicado en MLflow."
+    )
+
+
 def _production_version() -> str:
     response = requests.get(
         f"{os.environ['MLFLOW_TRACKING_URI']}/api/2.0/mlflow/registered-models/alias",
@@ -56,6 +77,28 @@ def _production_version() -> str:
     )
     response.raise_for_status()
     return response.json()["model_version"]["version"]
+
+
+def _wait_for_production_version() -> str:
+    """Espera a que MLflow publique el alias que activó este deploy."""
+    deadline = time.monotonic() + API_STARTUP_TIMEOUT_SECONDS
+    next_log = 0.0
+    while time.monotonic() < deadline:
+        try:
+            version = _production_version()
+            print(f"MLflow publicó {MODEL_NAME}@{MODEL_ALIAS}, versión {version}.")
+            return version
+        except requests.RequestException as error:
+            now = time.monotonic()
+            if now >= next_log:
+                print(f"Esperando {MODEL_NAME}@{MODEL_ALIAS} en MLflow ({error}).")
+                next_log = now + 30
+            time.sleep(API_HEALTH_POLL_SECONDS)
+
+    raise AirflowFailException(
+        f"MLflow no publicó {MODEL_NAME}@{MODEL_ALIAS} dentro de "
+        f"{API_STARTUP_TIMEOUT_SECONDS} segundos."
+    )
 
 
 def _active_color() -> str:
@@ -84,20 +127,8 @@ def deploy_purchase_model():
     @task
     def resolve_target() -> dict[str, str]:
         """Decide qué versión desplegar y en qué color, o si no hay nada que hacer."""
-        version = _production_version()
-        health = {color: _instance_health(color) for color in COLORS}
-        running = [color for color in COLORS if health[color] is not None]
-        if not running:
-            raise AirflowSkipException(
-                "No hay instancias de la API corriendo; al iniciarlas cargarán "
-                f"{MODEL_ALIAS} (versión {version})."
-            )
-        if len(running) < len(COLORS):
-            stopped = next(color for color in COLORS if color not in running)
-            raise AirflowFailException(
-                f"Solo está corriendo api-{running[0]}: no se puede desplegar sin cortar "
-                f"el servicio. Levantar api-{stopped} y volver a disparar este DAG."
-            )
+        version = _wait_for_production_version()
+        health = _wait_for_instances()
 
         active = _active_color()
         if health[active]["model_version"] == version:
