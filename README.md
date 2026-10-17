@@ -68,7 +68,7 @@ Usa `docker compose` en lugar de `docker-compose` si tu instalacion ofrece el su
 - MinIO Console: http://localhost:9101 (`minioadmin` / `minioadmin`)
 - API REST (a través del proxy): http://localhost:8000/docs
 
-En Airflow, habilita los tres DAGs: `ingest_purchase_dataset`, `train_purchase_regressor` y `deploy_purchase_model`. Al habilitar la ingesta, Airflow ejecuta su corrida más reciente: en la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. Después se ejecuta todos los días a medianoche, hora de Argentina.
+Al iniciar el stack con `docker-compose up --build -d`, el servicio `airflow-trigger-ingest` espera a que Airflow cargue los tres DAGs, los habilita y dispara `ingest_purchase_dataset`. En la primera instalación crea el bucket `mlops-data`, publica el dataset y dispara el entrenamiento. En cada `docker-compose up` se vuelve a disparar la ingesta; el hash SHA-256 evita republicar el archivo o reentrenar si no cambió. Además, la ingesta conserva su schedule diario a medianoche, hora de Argentina.
 
 En la primera instalación todavía no hay modelo, así que `api-blue` y `api-green` terminan con error al iniciar: no arrancan sin un modelo que servir. Cuando el primer entrenamiento registre la versión `production`, levántalas:
 
