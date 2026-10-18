@@ -7,17 +7,35 @@ Este archivo registra los cambios relevantes del proyecto por entrega.
 ### Pendiente
 
 - Revisar posibles incongruencias en nombres de archivos que deja MLFlow una vez corrido el experimento
-- Verificar que el modelo llegue a la API a través de Airflow
+- Verificar end-to-end que Airflow despliegue el modelo promovido y la API lo sirva
 - Arreglar el bug de creacoón de nuevo environment
-- Si se crea un nuevo modelo en MLFlow, reiniciar la aplicación desde Airflow
 
-## Cambios sin publicar - 2026-10-15
+## Verificacion de disponibilidad de datos - 2026-10-15
 
 ### Modificado
 
 - Agregada la descarga temporal y comprobacion de un dataset no vacio en MinIO antes de cargar el modelo al iniciar la API. Un dataset ausente o inaccesible impide el arranque, al igual que un modelo que no se puede cargar.
 - Mantenida la API en el inicio general de Compose y conservados sus endpoints. El arranque depende de la disponibilidad del dataset y del modelo de produccion, no del resultado del ultimo entrenamiento.
 - Documentados los requisitos de arranque y el alcance de `/health`, que informa el modelo cargado y no el estado de Airflow.
+
+## Cambios integrados en main - 2026-10-18
+
+### Corregido
+
+- La API espera a que MLflow publique el alias `production` antes de iniciar Uvicorn, evitando fallos de arranque durante el primer entrenamiento.
+- El DAG `deploy_purchase_model` espera hasta 10 minutos a que exista el alias y a que `api-blue` y `api-green` estén saludables antes de continuar con el despliegue.
+- La API comprueba que `s3://mlops-data/raw/dataset_compras.csv` exista y no esté vacío antes de cargar el modelo. Si falta o no se puede leer, el inicio falla con el error visible en los logs.
+
+### Modificado
+
+- El despliegue Blue-Green carga y prueba el modelo en la instancia inactiva antes de cambiar el tráfico, conservando la instancia activa durante la espera.
+- Docker Compose configura `S3_BUCKET=mlops-data` para las instancias de la API.
+- Actualizado el README con el orden y las condiciones de arranque de las APIs y del DAG de despliegue.
+
+### Verificado
+
+- `docker compose config --quiet` valida la configuración de Compose.
+- No se agregaron pruebas automatizadas para el arranque de la API ni para el despliegue Blue-Green.
 
 ## Compatibilidad del despliegue local - 2026-10-15
 

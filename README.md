@@ -1,6 +1,9 @@
-# Demo local de MLOps
+# Trabajo Práctico integrador de MLOps
 
-Esta primera etapa entrena de forma reproducible la red de deep learning del trabajo de compras. El objetivo es predecir el gasto promedio por cliente.
+En el siguiente repositorio se podrá encontrar un despliegue de infraestructura dedicado a el CI/CD de machine learning.
+En el mismo podrán encontrar herramientas para realizar experimentos de entrenamiento y registro de modelos, gestión del flujo punta a punta de proceso, storage del tipo S3 donde alojar los Datasets y metadatos.
+El mismo se monta integramente sobre docker,tanto las herramientas utilizadas como la propia Api que usar el modelo para generar predicciones a través de request HTTP (Api REST)
+
 
 ## Integrantes
 
@@ -8,6 +11,7 @@ Esta primera etapa entrena de forma reproducible la red de deep learning del tra
 - **Alumno 2:** Walter Gabriel Sotelo
 - **Alumno 3:** Esteban Leonardo Torres Martín
 
+## Elementos de Infraestructura
 - **Airflow** orquesta la ingesta diaria del dataset y el reentrenamiento que esta dispara.
 - **MinIO** almacena los datasets y los artefactos físicos del modelo mediante S3.
 - **MLflow** registra parametros, métricas y versiones, y actúa como acceso al modelo.
@@ -21,11 +25,12 @@ FastAPI carga `purchase-spend-regressor@production` desde MLflow; MLflow recuper
 
 El dataset `dataset_compras.csv` (una fila por compra: `User_ID`, `Product_ID`, `Age`, `Gender`, `Marital_Status`, `City_Category`, `Stay_In_Current_City_Years`, `Product_Category`, `Purchase`, entre otras) lo publica el equipo de Data Mining/BI en una ruta remota. En esta demo esa ruta se simula con un [archivo público en Google Drive](https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view), configurado en la variable `DATASET_SOURCE_URL` de `docker-compose.yml`. No hace falta descargarlo a mano: el pipeline lo obtiene solo.
 
-El flujo se divide en dos DAGs conectados por un [Dataset de Airflow](https://airflow.apache.org/docs/apache-airflow/2.10.5/authoring-and-scheduling/datasets.html) (`s3://mlops-data/raw/dataset_compras.csv`):
+El flujo se divide en tres DAGs conectados por eventos manejados en Airflow[Dataset de Airflow](https://airflow.apache.org/docs/apache-airflow/2.10.5/authoring-and-scheduling/datasets.html) (`s3://mlops-data/raw/dataset_compras.csv`):
 
 ```text
-ingest_purchase_dataset (diaria)                       train_purchase_regressor
-download_and_publish → continue_if_changed → announce_new_dataset ──▶ eda_validate → prepare_curated_dataset → train_evaluate_and_register
+ingest_purchase_dataset (diaria)                     train_purchase_regressor             deploy_purchase_regresor
+download_and_publish → continue_if_changed → announce_new_dataset 
+                 ──▶ eda_validate → prepare_curated_dataset → train_evaluate_and_register
 ```
 
 1. `ingest_purchase_dataset` corre una vez por día. `download_and_publish` descarga el archivo, calcula su SHA-256 y lo compara con el hash guardado como metadata del objeto ya publicado en MinIO. Solo si cambió (o si todavía no hay nada publicado) lo sube a `raw/dataset_compras.csv`.
@@ -33,6 +38,9 @@ download_and_publish → continue_if_changed → announce_new_dataset ──▶ 
 3. Si hubo cambios, `announce_new_dataset` emite el evento del Dataset y Airflow dispara `train_purchase_regressor`.
 
 Es decir: **el reentrenamiento se dispara cuando llega una versión nueva del dataset**, no por calendario. También puede ejecutarse a mano con **Trigger DAG**. Como el evento se consume al disparar el entrenamiento, si este falla tras su reintento automático hay que relanzarlo a mano: la ingesta no vuelve a avisar hasta que el archivo cambie.
+
+4. Si el modelo se pudo publicar, se dispara el evento para ejecutar `deploy_purchase_regresor`
+5. Se levanta la Api para dar servicio.
 
 ## Arquitectura
 
@@ -56,8 +64,6 @@ demo-mlops/
 Requisito: Docker Desktop con al menos 4 GB de memoria asignada.
 
 ```bash
-cd "Operaciones de machine learning/demo-mlops"
-docker-compose up airflow-init
 docker-compose up --build -d
 ```
 
