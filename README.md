@@ -76,6 +76,8 @@ En la primera instalación todavía no hay modelo, así que `api-blue` y `api-gr
 docker compose up -d api-blue api-green
 ```
 
+Al iniciar, cada instancia comprueba que `s3://mlops-data/raw/dataset_compras.csv` exista y no esté vacío antes de cargar el alias `production`. Si falta el objeto o no se puede acceder a MinIO, revisa los logs de la API y de MinIO.
+
 `train_purchase_regressor` ejecuta estas etapas:
 
 1. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
