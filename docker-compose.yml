@@ -1,3 +1,6 @@
+# Token compartido entre Airflow y la API para /admin/load (deploy Blue-Green).
+x-api-admin-token: &api-admin-token blue-green-demo-token
+
 services:
   postgres:
     image: postgres:16
@@ -16,7 +19,6 @@ services:
   mlflow:
     build:
       context: ./mlflow
-      network: host
     command: >-
       mlflow server
       --backend-store-uri sqlite:////mlflow/db/mlflow.db
@@ -38,7 +40,7 @@ services:
         condition: service_completed_successfully
 
   minio:
-    image: quay.io/minio/minio:latest
+    image: coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -50,7 +52,7 @@ services:
       - minio-data:/data
 
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
     entrypoint: /bin/sh
     command: >-
       -c 'until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
@@ -59,11 +61,13 @@ services:
       minio:
         condition: service_started
 
-  api:
+  # Deploy Blue-Green: dos instancias de la API detrás del proxy. Ninguna publica
+  # puertos; el tráfico entra por el proxy y Airflow las alcanza por la red interna.
+  api-blue:
+    &api-common
     build:
       context: ./api
-      network: host
-    environment:
+    environment: &api-environment
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minioadmin
@@ -71,33 +75,62 @@ services:
       AWS_DEFAULT_REGION: us-east-1
       MODEL_NAME: purchase-spend-regressor
       MODEL_ALIAS: production
-    ports:
-      - "8000:8000"
+      ADMIN_TOKEN: *api-admin-token
+      API_COLOR: blue
     depends_on:
       mlflow:
         condition: service_started
+
+  api-green:
+    <<: *api-common
+    environment:
+      <<: *api-environment
+      API_COLOR: green
+
+  proxy:
+    image: traefik:v3.3
+    # Si todavía no hay color activo (primer arranque), parte de blue. Después
+    # deja el directorio a nombre del usuario de Airflow, que lo reescribe.
+    entrypoint: /bin/sh
+    command: >-
+      -c 'if [ ! -f /etc/traefik/dynamic/active.yml ]; then
+      sed "s/{color}/blue/g" /etc/traefik/config/active.yml.template > /etc/traefik/dynamic/active.yml;
+      fi;
+      chown -R 50000:0 /etc/traefik/dynamic;
+      exec traefik --configFile=/etc/traefik/config/traefik.yml'
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./proxy:/etc/traefik/config:ro
+      - proxy-dynamic:/etc/traefik/dynamic
 
   airflow-init:
     &airflow-common
     build:
       context: ./airflow
-      network: host
     environment: &airflow-environment
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
       AIRFLOW__CORE__FERNET_KEY: E6uCq8-QhHuqap0i51ns7fxgm89o3x1mYD9veKoyywM=
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       MLFLOW_TRACKING_URI: http://mlflow:5000
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: mlops-data
-      DATASET_SOURCE_PATH: /opt/airflow/source-data/dataset_compras.csv
+      # Ruta remota donde el equipo de BI publica el dataset (simulada con Google Drive).
+      DATASET_SOURCE_URL: https://drive.google.com/file/d/1e_FRepCpHBWWGj3TYG4HY7WHALCyR4wQ/view
+      ADMIN_TOKEN: *api-admin-token
+      PROXY_URL: http://proxy:8000
     user: "50000:0"
     volumes: &airflow-volumes
       - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/scripts:/opt/airflow/scripts:ro
       - ./airflow/logs:/opt/airflow/logs
-      - ../../aprendizaje profundo:/opt/airflow/source-data:ro
+      - airflow-venv-cache:/opt/airflow/venv-cache
+      - ./proxy:/opt/airflow/proxy:ro
+      - proxy-dynamic:/opt/airflow/proxy-dynamic
     depends_on: &airflow-depends-on
       postgres:
         condition: service_healthy
@@ -124,7 +157,20 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  airflow-trigger-ingest:
+    <<: *airflow-common
+    command: bash /opt/airflow/scripts/trigger_ingest_on_startup.sh
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-scheduler:
+        condition: service_started
+
 volumes:
   postgres-data:
   mlflow-db:
   minio-data:
+  airflow-venv-cache:
+  proxy-dynamic:
