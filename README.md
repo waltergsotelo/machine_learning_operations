@@ -72,6 +72,8 @@ Al iniciar el stack con `docker-compose up --build -d`, el servicio `airflow-tri
 
 En la primera instalación, `api-blue` y `api-green` esperan a que MLflow publique el alias `production` antes de iniciar. Cuando el entrenamiento lo publica, ambas APIs cargan el modelo y el DAG de deploy espera a que estén saludables antes de continuar.
 
+Al iniciar, cada instancia comprueba que `s3://mlops-data/raw/dataset_compras.csv` exista y no esté vacío antes de cargar el alias `production`. Si falta el objeto o no se puede acceder a MinIO, revisa los logs de la API y de MinIO.
+
 `train_purchase_regressor` ejecuta estas etapas:
 
 1. `eda_validate`: valida columnas, nulos, compras inválidas y consistencia demográfica; guarda el informe en `reports/eda_dataset_compras.json`.
